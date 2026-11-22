@@ -4,28 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useSessionStore } from "@/lib/session/SessionContext";
 import { useUIStore } from "@/lib/store/uiStore";
 import { useNow } from "./useNow";
-import { DAY_MS, dayLevels, nakedPocs, parseBinanceKlines, utcDay, type DayLevels, type Kline } from "@/lib/engine/priorSessions";
+import { DAY_MS, dayLevels, fetchBinanceKlines, nakedPocs, utcDay, type DayLevels, type Kline } from "@/lib/engine/priorSessions";
 
 const DAYS_BACK = 7;
-const INTERVAL = "5m";
-const BAR_MS = 5 * 60_000;
-
-/**
- * Binance is the reference venue for prior-day levels: it lists every
- * instrument in the catalog for both perpetuals and spot.
- */
-async function fetchKlines(symbol: string, marketType: "perpetual" | "spot", from: number, to: number, signal: AbortSignal): Promise<Kline[]> {
-  const base = marketType === "perpetual" ? "https://fapi.binance.com/fapi/v1/klines" : "https://api.binance.com/api/v3/klines";
-  const limit = marketType === "perpetual" ? 1500 : 1000;
-  const out: Kline[] = [];
-  for (let start = from; start < to; start += limit * BAR_MS) {
-    const url = `${base}?symbol=${encodeURIComponent(symbol)}&interval=${INTERVAL}&startTime=${start}&endTime=${Math.min(to, start + limit * BAR_MS) - 1}&limit=${limit}`;
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`Kline request failed (${response.status})`);
-    out.push(...parseBinanceKlines((await response.json()) as unknown[][]));
-  }
-  return out;
-}
 
 export interface PriorSessions {
   previous: DayLevels | null;
@@ -58,7 +39,7 @@ export function usePriorSessions(): PriorSessions {
     const timer = setTimeout(() => {
       setState({ key, klines: [], status: "loading" });
       // Include today's bars so a POC revisited earlier today is not shown as naked.
-      fetchKlines(symbol, kind, today - DAYS_BACK * DAY_MS, Math.min(today + DAY_MS, Date.now()), controller.signal)
+      fetchBinanceKlines(symbol, kind, today - DAYS_BACK * DAY_MS, Math.min(today + DAY_MS, Date.now()), controller.signal)
         .then((klines) => setState({ key, klines, status: "ready" }))
         .catch((error: unknown) => {
           if (controller.signal.aborted) return;

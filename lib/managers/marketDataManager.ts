@@ -81,6 +81,24 @@ export interface MarketEventSink {
   close(): void;
 }
 
+/** Sees every trade and liquidation the manager accepts (used by the snapshot exporter). */
+export interface MarketObserver {
+  trade?(trade: NormalizedTrade): void;
+  liquidation?(liquidation: NormalizedLiquidation): void;
+}
+
+/**
+ * One venue's resting orders within a band around its own mid. Venues are
+ * kept apart because USD-quoted books (Deribit, Kraken) sit a USD/USDT basis
+ * away from the USDT books, so a merged book is crossed and its mid misleads.
+ */
+export interface VenueDepth {
+  venue: Venue;
+  mid: number;
+  bids: [price: number, size: number][];
+  asks: [price: number, size: number][];
+}
+
 export interface ReplayConfig {
   venue: VenueSelection;
   symbol: string;
@@ -163,6 +181,9 @@ export class MarketDataManager {
   private venueDirty = false;
   private lastVenueCopy = 0;
   private lastMid = 0;
+  private observers = new Set<MarketObserver>();
+  /** Wall time of the latest message of any kind from each subscribed venue. */
+  private lastMessageAt = new Map<Venue, number>();
   /** Wall time when live; the replay's virtual time during a replay. */
   private clock = (): number => (this.replaying ? this.replayClock : Date.now());
 
@@ -286,6 +307,57 @@ export class MarketDataManager {
     return this.tapeLog.newestFirst();
   }
 
+  // ─── Observers (snapshot exporter) ─────────────────────────────
+  /** Register an observer of accepted trades and liquidations; returns a function that removes it. */
+  addObserver(observer: MarketObserver): () => void {
+    this.observers.add(observer);
+    return () => {
+      this.observers.delete(observer);
+    };
+  }
+
+  /** Wall time of the latest message from each subscribed venue (absent until its first one). */
+  venueLastMessage(): ReadonlyMap<Venue, number> {
+    return this.lastMessageAt;
+  }
+
+  /**
+   * Each venue's resting orders within ±`band` (a fraction, 0.01 = 1%) of its
+   * own mid, from the deepest book its adapter holds. Venues without a
+   * two-sided, uncrossed book are left out.
+   */
+  bookDepth(band: number): VenueDepth[] {
+    const out: VenueDepth[] = [];
+    for (const [venue, book] of this.books) {
+      const sides = this.adapters.get(venue)?.depthSides?.() ?? bookSides(book);
+      let bestBid = 0;
+      let bestAsk = Infinity;
+      for (const [price, size] of sides.bids) if (size > 0 && price > bestBid) bestBid = price;
+      for (const [price, size] of sides.asks) if (size > 0 && price < bestAsk) bestAsk = price;
+      if (!(bestBid > 0) || !Number.isFinite(bestAsk) || bestBid >= bestAsk) continue;
+      const mid = (bestBid + bestAsk) / 2;
+      const lo = mid * (1 - band);
+      const hi = mid * (1 + band);
+      const bids: [number, number][] = [];
+      const asks: [number, number][] = [];
+      for (const [price, size] of sides.bids) if (size > 0 && price >= lo) bids.push([price, size]);
+      for (const [price, size] of sides.asks) if (size > 0 && price <= hi) asks.push([price, size]);
+      out.push({ venue, mid, bids, asks });
+    }
+    return out;
+  }
+
+  /** An observer that throws must not break the feed. */
+  private observe(deliver: (observer: MarketObserver) => void): void {
+    for (const observer of this.observers) {
+      try {
+        deliver(observer);
+      } catch (error) {
+        console.warn("[market-observer]", error);
+      }
+    }
+  }
+
   // ─── Replay ────────────────────────────────────────────────────
   /** Tear down the live feed and reset state so recorded events can be fed in. */
   beginReplay(config: ReplayConfig, startTime: number): void {
@@ -401,6 +473,7 @@ export class MarketDataManager {
     this.adapters.clear();
     this.listeners.clear();
     this.books.clear();
+    this.lastMessageAt.clear();
     this.currentCandleRef = null;
     this.previousCandleRef = null;
     this.allLevels = [];
@@ -416,9 +489,11 @@ export class MarketDataManager {
   }
 
   private onTrade(trade: NormalizedTrade): void {
+    this.lastMessageAt.set(trade.venue, Date.now());
     if (this.paused && !this.replaying) return;
     if (!Number.isFinite(trade.price) || trade.price <= 0) return;
     this.recorder?.trade(trade, this.clock());
+    if (this.observers.size) this.observe((o) => o.trade?.(trade));
     const store = this.store.getState();
     this.lastPrice = trade.price;
 
@@ -581,6 +656,7 @@ export class MarketDataManager {
   }
 
   private onOrderBook(book: NormalizedOrderBook): void {
+    this.lastMessageAt.set(book.venue, Date.now());
     if (this.paused && !this.replaying) return;
     this.recorder?.book(book, this.clock());
 
@@ -607,6 +683,7 @@ export class MarketDataManager {
   }
 
   private onLiquidation(liquidation: NormalizedLiquidation): void {
+    this.lastMessageAt.set(liquidation.venue, Date.now());
     if (!this.replaying && (this.paused || !this.adapters.has(liquidation.venue))) return;
     // Some feeds (OKX) replay the last known liquidation long after the fact,
     // and snapshot-style feeds can repeat a record; keep only fresh, unseen ones.
@@ -617,11 +694,13 @@ export class MarketDataManager {
       this.seenLiquidations = new Set([...this.seenLiquidations].slice(-5_000));
     }
     this.recorder?.liquidation(liquidation, this.clock());
+    if (this.observers.size) this.observe((o) => o.liquidation?.(liquidation));
     this.pendingLiquidations.push(liquidation);
     this.scheduleFlush();
   }
 
   private onDerivatives(update: DerivativesSnapshot): void {
+    this.lastMessageAt.set(update.venue, Date.now());
     if (!this.replaying && (this.paused || !this.adapters.has(update.venue))) return;
     const merged = mergeDerivatives(this.derivatives.get(update.venue), update);
     this.derivatives.set(update.venue, merged);

@@ -3,6 +3,7 @@
 import React, { useEffect, useLayoutEffect } from "react";
 import { useMarketData } from "@/hooks/useMarketData";
 import { useAlerts } from "@/hooks/useAlerts";
+import { useOrderflowExporter } from "@/hooks/useOrderflowExporter";
 import { useAlertStore } from "@/lib/store/alertStore";
 import AlertToasts from "@/components/AlertToasts";
 import ReplayBar from "@/components/ReplayBar";
@@ -61,6 +62,7 @@ export default function Terminal() {
 function SessionTerminal() {
   useMarketData();
   useAlerts();
+  useOrderflowExporter();
 
   const panels = useUIStore((s) => s.panels);
   const theme = useUIStore((s) => s.theme);

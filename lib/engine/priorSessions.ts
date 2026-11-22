@@ -48,6 +48,33 @@ export function parseBinanceKlines(rows: unknown[][]): Kline[] {
     .filter((k) => Number.isFinite(k.openTime) && k.high > 0 && k.low > 0 && k.volume >= 0);
 }
 
+const KLINE_INTERVAL = "5m";
+const KLINE_MS = 5 * 60_000;
+
+/**
+ * Binance 5m klines over [from, to). Binance is the reference venue for
+ * prior-day levels: it lists every instrument in the catalog for both
+ * perpetuals and spot.
+ */
+export async function fetchBinanceKlines(
+  symbol: string,
+  marketType: "perpetual" | "spot",
+  from: number,
+  to: number,
+  signal?: AbortSignal
+): Promise<Kline[]> {
+  const base = marketType === "perpetual" ? "https://fapi.binance.com/fapi/v1/klines" : "https://api.binance.com/api/v3/klines";
+  const limit = marketType === "perpetual" ? 1500 : 1000;
+  const out: Kline[] = [];
+  for (let start = from; start < to; start += limit * KLINE_MS) {
+    const url = `${base}?symbol=${encodeURIComponent(symbol)}&interval=${KLINE_INTERVAL}&startTime=${start}&endTime=${Math.min(to, start + limit * KLINE_MS) - 1}&limit=${limit}`;
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Kline request failed (${response.status})`);
+    out.push(...parseBinanceKlines((await response.json()) as unknown[][]));
+  }
+  return out;
+}
+
 /** Volume by tick index, spreading each bar's volume across its range. */
 export function distributeVolume(klines: Kline[], tick: number): Map<number, number> {
   const profile = new Map<number, number>();

@@ -544,6 +544,36 @@ Run the linter:
 npm run lint
 ```
 
+## Orderflow snapshot export
+
+While the dashboard is open, it writes a BTCUSDT summary across all perpetual
+venues to disk every 60 seconds, for scheduled tasks that can read files but
+cannot call a localhost API (schema `orderflow-snapshot/v1`).
+
+- File: `<ORDERFLOW_EXPORT_DIR>/BTCUSDT.json`, default `Z:\Daily brief\orderflow`.
+  It is written to `BTCUSDT.json.tmp` and renamed over the real file, so a
+  reader never sees a half-written file.
+- Contents: 1h / 4h / 24h windows (OHLC, volume and delta in BTC and USD,
+  VWAP, volume profile, open-interest change, liquidations, big prints,
+  realized volatility, trades per second and closed 5m / 15m / 1h bars with
+  CVD), derivatives by venue, session / prior-day / naked-POC levels, book
+  depth, imbalance and walls, a venue table, recent events, and health notes.
+- Every key is always present; a value that is not known is `null`.
+- The export runs its own background session for BTCUSDT on every perp venue,
+  so it does not depend on what the dashboard shows and keeps going while the
+  tab is hidden. While the dashboard itself shows BTCUSDT All perps, the
+  session levels, open interest, funding and basis are taken from it, so the
+  file matches the header.
+- Windows cover the time the dashboard has been running (`complete` and
+  `coverageMin` say how much); there is no REST backfill.
+- With the dashboard open in several tabs or browsers, one of them writes the
+  file and the others stand by; one takes over within 3 minutes when the
+  writer closes.
+
+Settings (`.env.local`): `ORDERFLOW_EXPORT_DIR` (server),
+`NEXT_PUBLIC_ORDERFLOW_EXPORT=0` to turn it off, and
+`NEXT_PUBLIC_ORDERFLOW_EXPORT_INTERVAL_MS` (default `60000`).
+
 ## Docker
 
 The `Dockerfile` builds a production image and runs `next start` as the
