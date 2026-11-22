@@ -4,6 +4,12 @@
 // Built on the newer Siebly WebSocket base: data arrives as "message",
 // drops emit "reconnecting", and closeAll() also releases sockets that are
 // still opening, so no shutdown sweep is needed.
+//
+// The `trades` channel replays the last 30 trades as its first message after
+// every subscription (initial or after a reconnect), with nothing marking it
+// as a snapshot. That message is skipped, as the Bitget and Coinbase adapters
+// skip their trade snapshots, so old prints neither back-date the footprint
+// nor get counted twice; trade ids already emitted are dropped as a backstop.
 // ============================================================
 
 import type { WebsocketClient, WebsocketSubscription } from "@siebly/hyperliquid-api";
@@ -12,9 +18,15 @@ import { emitBook } from "./book";
 import { quietLogger, SieblyAdapter, type AckResult, type SieblyEventNames } from "./siebly";
 import type { Venue } from "@/lib/types/market";
 
+/** Trade ids remembered to drop a repeat of a print already emitted. */
+const MAX_SEEN_TRADES = 10_000;
+
 export class HyperliquidAdapter extends SieblyAdapter<WebsocketClient, WebsocketSubscription> {
   readonly venue: Venue = "hyperliquid";
   protected readonly events: SieblyEventNames = { data: "message", reconnecting: "reconnecting" };
+  /** The next `trades` message is the replay of recent trades that follows a subscription. */
+  private skipTradeSnapshot = false;
+  private readonly seenTrades = new Set<number>();
 
   constructor(symbol: string) {
     // Accept BTCUSDT or BTC — normalize to BTC
@@ -41,6 +53,9 @@ export class HyperliquidAdapter extends SieblyAdapter<WebsocketClient, Websocket
   /** l2Book pushes full snapshots, so a resubscribe is never needed for gaps. */
   protected bookTopics(): WebsocketSubscription[] { return [{ type: "l2Book", coin: this.symbol }]; }
   protected subscribeTopics(client: WebsocketClient, topics: WebsocketSubscription[]) { return client.subscribe(topics); }
+  protected onTopicsSubscribed(topics: WebsocketSubscription[]): void {
+    if (topics.some((topic) => (topic as { type?: string }).type === "trades")) this.skipTradeSnapshot = true;
+  }
   protected unsubscribeTopics(client: WebsocketClient, topics: WebsocketSubscription[]) { return client.unsubscribe(topics); }
 
   protected ackOf(response: unknown): AckResult {
@@ -51,7 +66,14 @@ export class HyperliquidAdapter extends SieblyAdapter<WebsocketClient, Websocket
   protected handleMessage(raw: unknown): void {
     const msg = raw as { channel: string; data: unknown };
     if (msg.channel === "trades") {
+      if (this.skipTradeSnapshot) {
+        // The replay of recent trades that follows a (re)subscription.
+        this.skipTradeSnapshot = false;
+        return;
+      }
       for (const t of msg.data as Array<{ coin: string; side: "A" | "B"; px: string; sz: string; time: number; tid: number }>) {
+        if (this.seenTrades.has(t.tid)) continue;
+        this.rememberTrade(t.tid);
         const price = parseFloat(t.px), qty = parseFloat(t.sz);
         this.emitTrade({ id: `hl-${t.tid}`, venue: this.venue, symbol: t.coin, timestamp: t.time, localTimestamp: Date.now(), price, quantity: qty, quoteVolume: price * qty, side: t.side === "B" ? "buy" : "sell", marketType: "perpetual" });
       }
@@ -76,6 +98,14 @@ export class HyperliquidAdapter extends SieblyAdapter<WebsocketClient, Websocket
         markPrice: num(ctx.markPx),
         indexPrice: num(ctx.oraclePx),
       });
+    }
+  }
+
+  private rememberTrade(tid: number): void {
+    this.seenTrades.add(tid);
+    if (this.seenTrades.size > MAX_SEEN_TRADES) {
+      const oldest = this.seenTrades.values();
+      for (let i = 0; i < MAX_SEEN_TRADES / 2; i++) this.seenTrades.delete(oldest.next().value as number);
     }
   }
 }

@@ -107,6 +107,15 @@ export abstract class SieblyAdapter<C extends SieblyEmitter, T> extends BaseExch
   /** Async setup that must finish before subscribing (e.g. contract sizes). */
   protected async prepare(): Promise<void> {}
 
+  /**
+   * Called whenever `topics` are about to be (re)subscribed: on connect, on a
+   * resubscribe, and when the SDK reconnects (it then restores every topic).
+   * Venues whose feeds replay recent data on subscribe can prepare for it.
+   */
+  protected onTopicsSubscribed(topics: T[]): void {
+    void topics; // nothing to prepare by default
+  }
+
   connect(): void {
     this.teardown();
     this.offline = false;
@@ -122,6 +131,7 @@ export abstract class SieblyAdapter<C extends SieblyEmitter, T> extends BaseExch
         }
         this.client = client;
         this.wire(client);
+        this.onTopicsSubscribed(this.topics());
         this.subscribeTopics(client, this.topics());
         this.watchdog = setInterval(() => this.checkStale(), 10_000);
       })
@@ -159,6 +169,7 @@ export abstract class SieblyAdapter<C extends SieblyEmitter, T> extends BaseExch
       if (this.offline) return;
       this.reconnectAttempts++;
       this.resetBook();
+      this.onTopicsSubscribed(this.topics()); // the SDK resubscribes everything once it is back
       this.setStatus("connecting");
     });
     on("close", () => { if (!this.offline) this.setStatus("connecting"); });
@@ -194,6 +205,7 @@ export abstract class SieblyAdapter<C extends SieblyEmitter, T> extends BaseExch
   private resubscribe(topics: T[]): void {
     const client = this.client;
     if (!client || topics.length === 0) return;
+    this.onTopicsSubscribed(topics);
     swallow(this.unsubscribeTopics(client, topics));
     swallow(this.subscribeTopics(client, topics));
   }
