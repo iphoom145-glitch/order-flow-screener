@@ -574,6 +574,37 @@ Settings (`.env.local`): `ORDERFLOW_EXPORT_DIR` (server),
 `NEXT_PUBLIC_ORDERFLOW_EXPORT=0` to turn it off, and
 `NEXT_PUBLIC_ORDERFLOW_EXPORT_INTERVAL_MS` (default `60000`).
 
+### Running it all the time (Docker, no browser)
+
+The same exporter also runs as a Node service, without a browser or a web
+server (`scripts/orderflow-exporter.ts`, bundled into one file). From the
+repository folder:
+
+```bash
+docker compose up -d --build          # start, or update after a code change
+docker compose logs -f exporter       # follow its log
+docker compose ps                     # health: healthy / unhealthy
+docker compose down                   # stop it
+```
+
+- It writes to `Z:/Daily brief/orderflow`; set `ORDERFLOW_HOST_DIR` to use
+  another folder on the host.
+- `restart: unless-stopped` brings it back after a crash and whenever Docker
+  starts; it also exits (and is restarted) when nothing has been written for
+  five minutes. The health check turns unhealthy when the file is older than
+  three minutes.
+- For it to come back after a reboot, Docker Desktop has to start with
+  Windows (Docker Desktop, Settings, General, *Start Docker Desktop when you
+  sign in*), and the computer must not go to sleep.
+- While the service runs it owns the file: a dashboard open in a browser
+  stands by, and takes over about three minutes after the service stops.
+- An optional dashboard at <http://localhost:3000>, with its own exporter
+  turned off: `docker compose --profile dashboard up -d --build`.
+- `1h` / `4h` / `24h` windows need that much uptime to be complete
+  (`complete`, `coverageMin`); a restart starts them over.
+
+Run it without Docker: `npm run build:exporter && npm run start:exporter`.
+
 ## Docker
 
 The `Dockerfile` builds a production image and runs `next start` as the

@@ -20,6 +20,9 @@
 # production
 /build
 
+# headless exporter bundle (npm run build:exporter)
+/dist
+
 # misc
 .DS_Store
 *.pem

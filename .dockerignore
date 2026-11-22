@@ -13,6 +13,8 @@ node_modules
 .next
 out
 build
+dist
+.claude
 coverage
 docs
 __tests__

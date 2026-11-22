@@ -1,0 +1,55 @@
+# Orderflow snapshot exporter, running all the time (no browser needed):
+#
+#   docker compose up -d --build          start or update it
+#   docker compose logs -f exporter       follow its log
+#   docker compose down                   stop it
+#
+# It writes BTCUSDT.json into ORDERFLOW_HOST_DIR (default Z:/Daily brief/orderflow)
+# every minute and restarts itself with Docker (restart: unless-stopped).
+#
+# Optional dashboard at http://localhost:3000 (the exporter does not need it):
+#
+#   docker compose --profile dashboard up -d --build
+
+name: orderflow
+
+services:
+  exporter:
+    build:
+      context: .
+      dockerfile: Dockerfile.exporter
+    image: order-flow-exporter:local
+    container_name: orderflow-exporter
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
+    environment:
+      ORDERFLOW_EXPORT_DIR: /export
+      ORDERFLOW_EXPORT_SYMBOL: BTCUSDT
+      ORDERFLOW_EXPORT_INTERVAL_MS: "60000"
+      TZ: Asia/Bangkok
+    volumes:
+      - "${ORDERFLOW_HOST_DIR:-Z:/Daily brief/orderflow}:/export"
+    mem_limit: 1g
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+
+  dashboard:
+    profiles: [dashboard]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # The exporter service writes the file; a second exporter here is not needed.
+        NEXT_PUBLIC_ORDERFLOW_EXPORT: "0"
+    image: order-flow-dashboard:local
+    container_name: orderflow-dashboard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"

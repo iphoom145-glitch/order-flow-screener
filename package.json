@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "jest"
+    "test": "jest",
+    "build:exporter": "node scripts/build-exporter.mjs",
+    "start:exporter": "node dist/orderflow-exporter.cjs"
   },
   "dependencies": {
     "@siebly/htx-api": "1.0.8",
@@ -35,6 +37,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
     "jest": "^30.5.2",

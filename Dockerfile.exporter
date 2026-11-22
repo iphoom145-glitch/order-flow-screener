@@ -1,0 +1,36 @@
+# Headless orderflow exporter (scripts/orderflow-exporter.ts): no browser, no
+# web server. Writes /export/BTCUSDT.json every minute; see compose.yaml.
+# The builder bundles the service and its packages into one file, so the
+# final image is Node plus that file.
+ARG NODE_VERSION=22-alpine
+
+FROM node:${NODE_VERSION} AS builder
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --no-audit --no-fund
+COPY tsconfig.json ./
+COPY scripts ./scripts
+COPY lib ./lib
+COPY app/api ./app/api
+RUN npm run build:exporter
+
+FROM node:${NODE_VERSION} AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV ORDERFLOW_EXPORT_DIR=/export
+ENV ORDERFLOW_EXPORT_SYMBOL=BTCUSDT
+
+COPY --from=builder /app/dist/orderflow-exporter.cjs ./orderflow-exporter.cjs
+
+RUN mkdir -p /export && chown node:node /export
+USER node
+STOPSIGNAL SIGTERM
+
+# Unhealthy when the file has not been replaced for three minutes.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=90s --retries=3 \
+  CMD node -e "const s=require('node:fs').statSync(process.env.ORDERFLOW_EXPORT_DIR+'/'+process.env.ORDERFLOW_EXPORT_SYMBOL+'.json');process.exit(Date.now()-s.mtimeMs<180000?0:1)"
+
+CMD ["node", "orderflow-exporter.cjs"]
