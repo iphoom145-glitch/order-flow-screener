@@ -22,10 +22,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV ORDERFLOW_EXPORT_DIR=/export
 ENV ORDERFLOW_EXPORT_SYMBOL=BTCUSDT
+ENV ORDERFLOW_STATE_DIR=/state
 
 COPY --from=builder /app/dist/orderflow-exporter.cjs ./orderflow-exporter.cjs
 
-RUN mkdir -p /export && chown node:node /export
+RUN mkdir -p /export /state && chown node:node /export /state
 USER node
 STOPSIGNAL SIGTERM
 

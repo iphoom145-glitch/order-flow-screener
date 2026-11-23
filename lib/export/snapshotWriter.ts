@@ -28,10 +28,10 @@ function isTransient(error: unknown): boolean {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function writeNow(target: string, content: string): Promise<string> {
+async function writeNow(target: string, content: string | Uint8Array): Promise<string> {
   await mkdir(path.dirname(target), { recursive: true });
   const temp = `${target}.tmp`;
-  await writeFile(temp, content, "utf8");
+  await writeFile(temp, content, typeof content === "string" ? "utf8" : undefined);
   for (let attempt = 1; ; attempt++) {
     try {
       await rename(temp, target);
@@ -49,7 +49,7 @@ async function writeNow(target: string, content: string): Promise<string> {
 const queues = new Map<string, Promise<unknown>>();
 
 /** Write `content` to `dir/fileName` via `fileName.tmp` + rename. Returns the final path. */
-export function writeFileAtomic(dir: string, fileName: string, content: string): Promise<string> {
+export function writeFileAtomic(dir: string, fileName: string, content: string | Uint8Array): Promise<string> {
   const target = path.join(dir, fileName);
   const previous = queues.get(target) ?? Promise.resolve();
   const next = previous.catch(() => {}).then(() => writeNow(target, content));

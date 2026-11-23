@@ -293,6 +293,47 @@ function emptyBucket(start: number): MinuteBucket {
   };
 }
 
+/** A minute in saved form: JSON-safe (Maps as pairs, the infinities of an empty minute as null). */
+export interface SavedMinute {
+  start: number;
+  covered: boolean;
+  open: number | null;
+  openTime: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  closeTime: number | null;
+  volume: number;
+  buy: number;
+  sell: number;
+  quote: number;
+  buyQuote: number;
+  sellQuote: number;
+  trades: number;
+  levels: [number, number][];
+  venueVolume: [Venue, number][];
+  liqLongUSD: number;
+  liqShortUSD: number;
+  liqLongCount: number;
+  liqShortCount: number;
+  liqQty: number;
+  liqVenueUSD: [Venue, number][];
+  largestLiq: NormalizedLiquidation | null;
+  bigCount: number;
+  bigBuyUSD: number;
+  bigSellUSD: number;
+  oiUSD: number | null;
+}
+
+export interface SavedFlow {
+  tick: number;
+  bigPrintUsd: number;
+  minutes: SavedMinute[];
+}
+
+const finiteOrNull = (value: number): number | null => (Number.isFinite(value) ? value : null);
+const numberOr = (value: unknown, fallback: number): number => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+
 const usdOf = (x: { quoteVolume: number; price: number; quantity: number }) =>
   x.quoteVolume > 0 ? x.quoteVolume : x.price * x.quantity;
 
@@ -405,6 +446,94 @@ export class MinuteFlow {
     if (usd === null || !(usd > 0)) return;
     const b = this.bucketAt(now);
     if (b) b.oiUSD = usd;
+  }
+
+  /** Everything recorded, JSON-safe; `restore` reads it back after a restart. */
+  save(): SavedFlow {
+    const minutes: SavedMinute[] = [];
+    for (const b of [...this.buckets.values()].sort((a, c) => a.start - c.start)) {
+      minutes.push({
+        start: b.start,
+        covered: b.covered,
+        open: b.open,
+        openTime: finiteOrNull(b.openTime),
+        high: finiteOrNull(b.high),
+        low: finiteOrNull(b.low),
+        close: b.close,
+        closeTime: finiteOrNull(b.closeTime),
+        volume: b.volume,
+        buy: b.buy,
+        sell: b.sell,
+        quote: b.quote,
+        buyQuote: b.buyQuote,
+        sellQuote: b.sellQuote,
+        trades: b.trades,
+        levels: [...b.levels].map(([index, volume]) => [index, round(volume, 6) ?? 0]),
+        venueVolume: [...b.venueVolume],
+        liqLongUSD: b.liqLongUSD,
+        liqShortUSD: b.liqShortUSD,
+        liqLongCount: b.liqLongCount,
+        liqShortCount: b.liqShortCount,
+        liqQty: b.liqQty,
+        liqVenueUSD: [...b.liqVenueUSD],
+        largestLiq: b.largestLiq,
+        bigCount: b.bigCount,
+        bigBuyUSD: b.bigBuyUSD,
+        bigSellUSD: b.bigSellUSD,
+        oiUSD: b.oiUSD,
+      });
+    }
+    return { tick: this.tick, bigPrintUsd: this.bigPrintUsd, minutes };
+  }
+
+  /**
+   * Load minutes saved before a restart (nothing is loaded when the price
+   * bucket differs, since the saved levels would not line up). Minutes already
+   * present, outside the retained period or in the future are ignored. Big
+   * print counts are dropped when their threshold changed. Returns the number
+   * of minutes loaded.
+   */
+  restore(saved: SavedFlow, now: number): number {
+    if (!saved || saved.tick !== this.tick || !Array.isArray(saved.minutes)) return 0;
+    const sameThreshold = saved.bigPrintUsd === this.bigPrintUsd;
+    let count = 0;
+    for (const m of saved.minutes) {
+      if (!m || typeof m.start !== "number" || m.start % MINUTE_MS !== 0) continue;
+      if (m.start < now - RETAIN_MS || m.start > now || this.buckets.has(m.start)) continue;
+      const b = emptyBucket(m.start);
+      b.covered = m.covered === true;
+      b.open = typeof m.open === "number" ? m.open : null;
+      b.openTime = numberOr(m.openTime, Infinity);
+      b.high = numberOr(m.high, -Infinity);
+      b.low = numberOr(m.low, Infinity);
+      b.close = typeof m.close === "number" ? m.close : null;
+      b.closeTime = numberOr(m.closeTime, -Infinity);
+      b.volume = numberOr(m.volume, 0);
+      b.buy = numberOr(m.buy, 0);
+      b.sell = numberOr(m.sell, 0);
+      b.quote = numberOr(m.quote, 0);
+      b.buyQuote = numberOr(m.buyQuote, 0);
+      b.sellQuote = numberOr(m.sellQuote, 0);
+      b.trades = numberOr(m.trades, 0);
+      b.levels = new Map(m.levels ?? []);
+      b.venueVolume = new Map(m.venueVolume ?? []);
+      b.liqLongUSD = numberOr(m.liqLongUSD, 0);
+      b.liqShortUSD = numberOr(m.liqShortUSD, 0);
+      b.liqLongCount = numberOr(m.liqLongCount, 0);
+      b.liqShortCount = numberOr(m.liqShortCount, 0);
+      b.liqQty = numberOr(m.liqQty, 0);
+      b.liqVenueUSD = new Map(m.liqVenueUSD ?? []);
+      b.largestLiq = m.largestLiq ?? null;
+      b.bigCount = sameThreshold ? numberOr(m.bigCount, 0) : 0;
+      b.bigBuyUSD = sameThreshold ? numberOr(m.bigBuyUSD, 0) : 0;
+      b.bigSellUSD = sameThreshold ? numberOr(m.bigSellUSD, 0) : 0;
+      b.oiUSD = typeof m.oiUSD === "number" ? m.oiUSD : null;
+      this.buckets.set(m.start, b);
+      if (m.start > this.newest) this.newest = m.start;
+      if (b.covered && (this.firstCovered === null || m.start < this.firstCovered)) this.firstCovered = m.start;
+      count++;
+    }
+    return count;
   }
 
   prune(now: number): void {

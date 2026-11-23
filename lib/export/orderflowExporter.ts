@@ -35,6 +35,7 @@ import {
   utcDate,
   type LevelSet,
   type OrderflowSnapshot,
+  type SavedFlow,
   type SnapshotEvent,
 } from "./orderflowSnapshot";
 
@@ -78,6 +79,15 @@ const ALERT_RULES_AS_EVENTS = new Set<AlertRuleId>(["vwapCross", "valueAreaCross
 const LIQUIDATION_NOTE =
   "Liquidations come from binance, bybit, okx, deribit, gate and kraken; bitget, hyperliquid, kucoin and htx publish no liquidation feed.";
 
+/** What a restart needs to carry on: the recorded minutes and the recent events. */
+export interface ExporterState {
+  version: 1;
+  symbol: string;
+  savedAt: number;
+  flow: SavedFlow;
+  events: SnapshotEvent[];
+}
+
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 const WRITER_KEY = "orderflow-export-writer";
@@ -117,6 +127,9 @@ export class OrderflowExporter {
 
   private bigPrints: SnapshotEvent[] = [];
   private stacked: SnapshotEvent[] = [];
+  private restoredEvents: SnapshotEvent[] = [];
+  /** Set when history from before a restart was loaded. */
+  private restored: { minutes: number; savedAt: number } | null = null;
   private seenCandles = new Set<number>();
   private prior: { day: number; klines: Kline[] } | null = null;
   private priorError: string | null = null;
@@ -283,6 +296,37 @@ export class OrderflowExporter {
       }));
   }
 
+  // ─── State across restarts ─────────────────────────────────────
+  /** Everything needed to continue after a restart (see importState). */
+  exportState(now = Date.now()): ExporterState {
+    return {
+      version: 1,
+      symbol: this.symbol,
+      savedAt: now,
+      flow: this.flow.save(),
+      events: mergeEvents(
+        [this.store.getState().microEvents.map(microEventToSnapshot), this.bigPrints, this.stacked, this.restoredEvents],
+        now
+      ),
+    };
+  }
+
+  /**
+   * Load a saved state before start(). A state for another symbol, another
+   * version or a different price bucket is ignored. Returns the number of
+   * minutes loaded; the minutes while the exporter was stopped stay missing.
+   */
+  importState(state: unknown, now = Date.now()): number {
+    const saved = state as Partial<ExporterState> | null;
+    if (!saved || saved.version !== 1 || saved.symbol !== this.symbol || !saved.flow) return 0;
+    const minutes = this.flow.restore(saved.flow, now);
+    this.restoredEvents = (Array.isArray(saved.events) ? saved.events : []).filter(
+      (e) => !!e && typeof e.tMs === "number" && e.tMs >= now - EVENT_LOOKBACK_MS && e.tMs <= now
+    );
+    if (minutes) this.restored = { minutes, savedAt: typeof saved.savedAt === "number" ? saved.savedAt : now };
+    return minutes;
+  }
+
   private notes(fromDashboard: boolean, own: TerminalStore): string[] {
     const notes: string[] = [];
     const since = this.flow.coveredSince;
@@ -291,6 +335,11 @@ export class OrderflowExporter {
         ? "No live data recorded yet."
         : `Windows use live data recorded since ${isoWithOffset(since)}; no REST backfill (most venues publish no historical taker buy/sell split).`
     );
+    if (this.restored) {
+      notes.push(
+        `${this.restored.minutes} minutes of history from before a restart were restored (saved ${isoWithOffset(this.restored.savedAt)}); the minutes while the exporter was stopped are missing.`
+      );
+    }
     const ui = this.dashboard?.getState();
     notes.push(
       fromDashboard
@@ -341,6 +390,7 @@ export class OrderflowExporter {
           own.microEvents.map(microEventToSnapshot),
           this.bigPrints,
           this.stacked,
+          this.restoredEvents,
           liquidationClusters(this.flow, now, this.liquidationClusterUsd),
           this.alertEvents(now),
         ],

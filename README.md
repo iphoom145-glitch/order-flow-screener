@@ -600,8 +600,10 @@ docker compose down                   # stop it
   stands by, and takes over about three minutes after the service stops.
 - An optional dashboard at <http://localhost:3000>, with its own exporter
   turned off: `docker compose --profile dashboard up -d --build`.
-- `1h` / `4h` / `24h` windows need that much uptime to be complete
-  (`complete`, `coverageMin`); a restart starts them over.
+- Its recorded history (25 hours of minutes and recent events) is saved in the
+  `orderflow-state` volume after every export, so a restart, an update
+  (`up -d --build`) or a crash carries on; the minutes while it was stopped are
+  missing (`coverageMin`). `docker compose down -v` deletes the history.
 
 Run it without Docker: `npm run build:exporter && npm run start:exporter`.
 
